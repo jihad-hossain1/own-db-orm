@@ -1,6 +1,21 @@
 const { readData, writeData, filePath } = require("../utils/data-method");
 const path = require("path");
 
+// Custom error classes
+class ValidationError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "ValidationError";
+  }
+}
+
+class DatabaseError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "DatabaseError";
+  }
+}
+
 // Schema class to define the schema structure
 class Schema {
   constructor(schemaDefinition) {
@@ -8,42 +23,45 @@ class Schema {
   }
 
   validate(doc) {
-    const schema = new this.schemaDefinition();
-    return schema.validate(doc);
-  }
+    const validatedDoc = {};
+    for (const key in this.schemaDefinition) {
+      if (doc.hasOwnProperty(key)) {
+        const definition = this.schemaDefinition[key];
 
-  findOne(modelName, id) {
-    const data = readData(filePath(modelName));
-    return data.find((item) => item._id === id);
-  }
+        try {
+          // Type and custom validation handling
+          if (typeof definition === 'function') {
+            if (definition.name in { String: 1, Number: 1, Boolean: 1 }) {
+              if (typeof doc[key] !== definition.name.toLowerCase()) {
+                throw new ValidationError(`Invalid type for field ${key}. Expected ${definition.name}, got ${typeof doc[key]}`);
+              }
+            } else {
+              const error = definition(doc[key]);
+              if (error) throw new ValidationError(`Validation failed for field ${key}: ${error}`);
+            }
+          } else if (typeof definition === 'object' && typeof definition.type === 'function') {
+            if (typeof doc[key] !== definition.type.name.toLowerCase()) {
+              throw new ValidationError(`Invalid type for field ${key}. Expected ${definition.type.name}, got ${typeof doc[key]}`);
+            }
 
-  find(modelName) {
-    return readData(filePath(modelName));
-  }
+            if (definition.validate && typeof definition.validate === 'function') {
+              const error = definition.validate(doc[key]);
+              if (error) throw new ValidationError(`Validation failed for field ${key}: ${error}`);
+            }
+          }
 
-  delete(modelName, id) {
-    const data = readData(filePath(modelName));
-    const index = data.findIndex((item) => item._id === id);
-    if (index !== -1) {
-      data.splice(index, 1);
-      writeData(filePath(modelName), data);
+          validatedDoc[key] = doc[key];
+        } catch (error) {
+          if (error instanceof ValidationError) {
+            console.error(error.message);
+            throw error;
+          } else {
+            throw new Error(`Unexpected error during validation: ${error.message}`);
+          }
+        }
+      }
     }
-  }
-
-  patch(modelName, id, newFields) {
-    const data = readData(filePath(modelName));
-    const index = data.findIndex((item) => item._id === id);
-    if (index !== -1) {
-      data[index] = { ...data[index], ...newFields };
-      writeData(filePath(modelName), data);
-    }
-  }
-
-  findUnique(modelName, field) {
-    const data = readData(filePath(modelName));
-    const uniqueValues = new Set();
-    data.forEach((item) => uniqueValues.add(item[field]));
-    return Array.from(uniqueValues);
+    return validatedDoc;
   }
 }
 
@@ -56,51 +74,95 @@ class Model {
   }
 
   create(doc) {
-    const data = readData(this.filePath);
-    if (!Array.isArray(data)) {
-      throw new Error("Data read from file is not an array");
+    try {
+      const data = readData(this.filePath);
+      if (!Array.isArray(data)) {
+        throw new DatabaseError("Data read from file is not an array");
+      }
+      const validatedDoc = this.schema.validate(doc);
+      const newDoc = { _id: Math.floor(Math.random() * 1000), ...validatedDoc };
+      data.push(newDoc);
+      writeData(this.filePath, data);
+      return newDoc;
+    } catch (error) {
+      if (error instanceof ValidationError || error instanceof DatabaseError) {
+        console.error(error.message);
+        throw error;
+      } else {
+        throw new Error(`Unexpected error during create operation: ${error.message}`);
+      }
     }
-    const newDoc = { _id: Math.floor(Math.random() * 1000), ...doc };
-    data.push(newDoc);
-    writeData(this.filePath, data);
-    return newDoc;
   }
 
   static find(modelName) {
-    const filePath = path.join(__dirname, `../db/${modelName}.json`);
-    console.log("🚀 ~ Model ~ find ~ filePath:", filePath);
-    return readData(filePath);
+    try {
+      const filePath = path.join(__dirname, `../db/${modelName}.json`);
+      return readData(filePath);
+    } catch (error) {
+      throw new DatabaseError(`Error reading data for model ${modelName}: ${error.message}`);
+    }
   }
 
   static findOne(modelName, id) {
-    const filePath = path.join(__dirname, `../db/${modelName}.json`);
-    const data = readData(filePath);
-    return data.find((item) => item._id === id);
+    try {
+      const filePath = path.join(__dirname, `../db/${modelName}.json`);
+      const data = readData(filePath);
+      const doc = data.find((item) => item._id === id);
+      if (!doc) throw new DatabaseError(`Document with id ${id} not found in model ${modelName}`);
+      return doc;
+    } catch (error) {
+      throw new DatabaseError(`Error finding document with id ${id} in model ${modelName}: ${error.message}`);
+    }
   }
 
   static delete(modelName, id) {
-    const filePath = path.join(__dirname, `../db/${modelName}.json`);
-    let data = readData(filePath);
-    data = data.filter((item) => item._id !== id);
-    writeData(filePath, data);
+    try {
+      const filePath = path.join(__dirname, `../db/${modelName}.json`);
+      let data = readData(filePath);
+      const initialLength = data.length;
+      data = data.filter((item) => item._id !== id);
+      if (data.length === initialLength) throw new DatabaseError(`Document with id ${id} not found in model ${modelName}`);
+      writeData(filePath, data);
+    } catch (error) {
+      throw new DatabaseError(`Error deleting document with id ${id} in model ${modelName}: ${error.message}`);
+    }
   }
 
   static update(modelName, id, newFields) {
-    const filePath = path.join(__dirname, `../db/${modelName}.json`);
-    const data = readData(filePath);
-    const index = data.findIndex((item) => item._id === id);
-    if (index !== -1) {
-      data[index] = { ...data[index], ...newFields };
+    try {
+      const filePath = path.join(__dirname, `../db/${modelName}.json`);
+      const data = readData(filePath);
+      const index = data.findIndex((item) => item._id === id);
+      if (index === -1) throw new DatabaseError(`Document with id ${id} not found in model ${modelName}`);
+
+      const validatedFields = {};
+      for (const key in newFields) {
+        if (this.schema.schemaDefinition.hasOwnProperty(key)) {
+          validatedFields[key] = newFields[key];
+        }
+      }
+      data[index] = { ...data[index], ...validatedFields };
       writeData(filePath, data);
+    } catch (error) {
+      if (error instanceof ValidationError || error instanceof DatabaseError) {
+        console.error(error.message);
+        throw error;
+      } else {
+        throw new Error(`Unexpected error during update operation: ${error.message}`);
+      }
     }
   }
 
   static findUnique(modelName, field) {
-    const filePath = path.join(__dirname, `../db/${modelName}.json`);
-    const data = readData(filePath);
-    const uniqueValues = new Set();
-    data.forEach((item) => uniqueValues.add(item[field]));
-    return Array.from(uniqueValues);
+    try {
+      const filePath = path.join(__dirname, `../db/${modelName}.json`);
+      const data = readData(filePath);
+      const uniqueValues = new Set();
+      data.forEach((item) => uniqueValues.add(item[field]));
+      return Array.from(uniqueValues);
+    } catch (error) {
+      throw new DatabaseError(`Error finding unique values for field ${field} in model ${modelName}: ${error.message}`);
+    }
   }
 }
 
@@ -124,4 +186,4 @@ class DB {
 // Singleton instance of DB
 const db = new DB();
 
-module.exports = { Schema, db, Model };
+module.exports = { Schema, db, Model, ValidationError, DatabaseError };

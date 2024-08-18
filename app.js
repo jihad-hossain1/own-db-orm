@@ -1,6 +1,6 @@
 const express = require("express");
 const User = require("./models/user.model");
-const { Model } = require("./orm");
+const { Model, ValidationError, DatabaseError } = require("./orm");
 
 const app = express();
 
@@ -8,9 +8,22 @@ const app = express();
 app.use(express.json());
 
 // Routes
-app.post("/users", (req, res) => {
-  const newUser = User.user.create(req.body);
-  res.status(201).json(newUser);
+app.post("/users", async(req, res) => {
+  try {
+    const newUser = await User.user.create(req.body);
+    res.status(201).json(newUser);
+  } catch (error) {
+    if (error instanceof ValidationError) {
+      console.error("Validation Error:", error.message);
+      return res.status(400).json({ error: error.message });
+    } else if (error instanceof DatabaseError) {
+      console.error("Database Error:", error.message);
+      return res.status(400).json({ error: error.message });
+    } else {
+      console.error("Unexpected Error:", error.message);
+      return res.status(400).json({ error: error.message });
+    }
+  }
 });
 
 app.get("/users", (req, res) => {

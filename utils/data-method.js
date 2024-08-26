@@ -16,4 +16,6 @@ function filePath(modelName) {
   return path.join(__dirname, `../db/${modelName}.json`);
 }
 
+console.log("anything changed")
+
 module.exports = { readData, writeData , filePath};
